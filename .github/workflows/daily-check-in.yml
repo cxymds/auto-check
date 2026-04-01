@@ -7,19 +7,91 @@ on:
 
   workflow_dispatch:
 
+concurrency:
+  group: daily-check-in-self-hosted
+  cancel-in-progress: false
+
 jobs:
   run_script:
-    runs-on: ubuntu-22.04
+    runs-on:
+      - self-hosted
+      - linux
+    timeout-minutes: 20
+    env:
+      USERNAME: ${{ secrets.USERNAME }}
+      PASSWORD: ${{ secrets.PASSWORD }}
+      LINUXDO_USERNAME: ${{ secrets.LINUXDO_USERNAME }}
+      LINUXDO_PASSWORD: ${{ secrets.LINUXDO_PASSWORD }}
+      GOTIFY_URL: ${{ secrets.GOTIFY_URL }}
+      GOTIFY_TOKEN: ${{ secrets.GOTIFY_TOKEN }}
+      SC3_PUSH_KEY: ${{ secrets.SC3_PUSH_KEY }}
+      WXPUSH_URL: ${{ secrets.WXPUSH_URL }}
+      WXPUSH_TOKEN: ${{ secrets.WXPUSH_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      LINUXDO_COOKIES: ${{ secrets.LINUXDO_COOKIES }}
+      BROWSE_ENABLED: ${{ vars.BROWSE_ENABLED }}
+      BROWSER_HEADLESS: "true"
+      MANUAL_LOGIN_ENABLED: "false"
+      SELF_HOSTED_STATE_DIR: ${{ vars.SELF_HOSTED_STATE_DIR }}
+      BROWSER_PATH_OVERRIDE: ${{ vars.BROWSER_PATH }}
     steps:
       - uses: actions/checkout@v4
-      - uses: browser-actions/setup-chrome@v1
-      - name: Check Chrome version
-        run: chrome --version
-        
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9.19'
+          python-version: "3.11"
+
+      - name: Prepare self-hosted runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STATE_ROOT="${SELF_HOSTED_STATE_DIR:-$HOME/.cache/auto-check}"
+          STATE_ROOT="$(python - <<'PY' "$STATE_ROOT"
+from pathlib import Path
+import sys
+print(Path(sys.argv[1]).expanduser().resolve())
+PY
+)"
+
+          mkdir -p "$STATE_ROOT/runtime" "$STATE_ROOT/browser-profile"
+
+          BROWSER_PATH="${BROWSER_PATH_OVERRIDE:-}"
+          if [[ -z "$BROWSER_PATH" ]]; then
+            for candidate in chromium chromium-browser google-chrome google-chrome-stable; do
+              if command -v "$candidate" >/dev/null 2>&1; then
+                BROWSER_PATH="$(command -v "$candidate")"
+                break
+              fi
+            done
+          fi
+
+          echo "STATE_ROOT=$STATE_ROOT" >> "$GITHUB_ENV"
+          echo "RUNTIME_DIR=$STATE_ROOT/runtime" >> "$GITHUB_ENV"
+          echo "BROWSER_USER_DATA_DIR=$STATE_ROOT/browser-profile" >> "$GITHUB_ENV"
+          echo "COOKIE_SNAPSHOT_PATH=$STATE_ROOT/runtime/linuxdo-cookies.txt" >> "$GITHUB_ENV"
+          echo "LOCK_FILE=$STATE_ROOT/runtime/auto-check.lock" >> "$GITHUB_ENV"
+          if [[ -n "$BROWSER_PATH" ]]; then
+            echo "BROWSER_PATH=$BROWSER_PATH" >> "$GITHUB_ENV"
+          fi
+
+      - name: Check self-hosted prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          python --version
+          echo "State root: $STATE_ROOT"
+          echo "Runtime dir: $RUNTIME_DIR"
+          echo "Browser profile dir: $BROWSER_USER_DATA_DIR"
+
+          if [[ -z "${BROWSER_PATH:-}" ]]; then
+            echo "未检测到 Chromium/Chrome。请先在 self-hosted runner 上安装浏览器，或在仓库 Variables 中配置 BROWSER_PATH。"
+            exit 1
+          fi
+
+          "$BROWSER_PATH" --version
 
       - name: Install python dependencies
         run: |
@@ -27,20 +99,6 @@ jobs:
           pip install -r requirements.txt
 
       - name: Execute script
-        env:
-          USERNAME: ${{ secrets.USERNAME }}
-          PASSWORD: ${{ secrets.PASSWORD }}
-          LINUXDO_USERNAME: ${{ secrets.LINUXDO_USERNAME }}
-          LINUXDO_PASSWORD: ${{ secrets.LINUXDO_PASSWORD }}
-          GOTIFY_URL: ${{ secrets.GOTIFY_URL }}
-          GOTIFY_TOKEN: ${{ secrets.GOTIFY_TOKEN }}
-          SC3_PUSH_KEY: ${{ secrets.SC3_PUSH_KEY }}
-          WXPUSH_URL: ${{ secrets.WXPUSH_URL }}
-          WXPUSH_TOKEN: ${{ secrets.WXPUSH_TOKEN }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          LINUXDO_COOKIES: ${{ secrets.LINUXDO_COOKIES }}
-          BROWSE_ENABLED: ${{ secrets.BROWSE_ENABLED }}
         run: |
           python main.py
 

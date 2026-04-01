@@ -6,26 +6,73 @@
 
 ## 项目描述
 
-这个项目用于自动登录 [LinuxDo](https://linux.do/) 网站并随机读取几个帖子。它使用 Python 和 Playwright
-自动化库模拟浏览器登录并浏览帖子，以达到自动签到的功能。
+这个项目用于自动登录 [LinuxDo](https://linux.do/) 网站并随机读取几个帖子。它使用 Python 和 `DrissionPage`
+模拟浏览器登录并浏览帖子，以达到自动签到的功能。
 
-有时会登录失败，重试一下就行了，嫌失败邮件通知烦的可以吧action的邮件通知关了
+由于 `linux.do` 目前启用了更严格的 Cloudflare / 风控校验，**GitHub Actions 上的纯无状态登录已经不稳定**。  
+现在更推荐把项目跑在 **VPS / NAS / 本地电脑 / 自建服务器 / 自托管 runner / 青龙** 上，并使用**持久化浏览器 profile**保存登录态。
 
 ## 功能
 
 - 自动登录`LinuxDo`。
 - 自动浏览帖子。
-- 每天在`GitHub Actions`中自动运行。
-- 支持`青龙面板` 和 `Github Actions` 自动运行。
-- (可选)`Telegram`通知功能，推送获取签到结果（目前只支持GitHub Actions方式）。
+- 支持持久化浏览器 profile，适合自托管长期运行。
+- 支持首次人工登录初始化，后续任务自动复用会话。
+- 支持`青龙面板`、`cron`、`systemd timer`、自托管 runner 等方式运行。
 - (可选)`Gotify`通知功能，推送获取签到结果。
 - (可选)`Server酱³`通知功能，推送获取签到结果。
 - (可选)`wxpush`通知功能，推送获取签到结果。
+- (可选)`Telegram`通知功能，推送获取签到结果。
+
+## 推荐运行方式
+
+### 首选：自托管环境
+
+推荐使用以下任一环境：
+
+- 本地电脑 + `cron`
+- VPS / NAS / 小主机
+- 自托管 GitHub runner
+- 青龙面板
+
+这类环境的共同优势是：
+
+- 浏览器 profile 可以持久化保存
+- Cookie / 会话不会像 GitHub 托管 runner 一样每次重新开始
+- 首次登录完成后，后续任务通常只需要复用本地浏览器状态
+
+### 不再推荐：GitHub 托管 Actions
+
+`linux.do` 当前会对无状态云环境触发额外挑战，导致：
+
+- Cookie 一旦过期，自动回退账号密码登录可能失败
+- `session/csrf` 等接口可能返回 `403` / `429`
+- workflow 会出现“明明脚本没改，突然连续失败”的情况
+
+如果你仍想继续使用 GitHub Actions，请尽量依赖最新 Cookie，且接受其不稳定性。
 ## 环境变量配置
 
-### 登录方式（二选一）
+### 登录方式
 
-**方式一：Cookie 登录（优先）**
+脚本现在会按以下顺序尝试登录：
+
+1. 持久化浏览器 profile
+2. `LINUXDO_COOKIES`
+3. 本地 Cookie 快照文件
+4. `LINUXDO_USERNAME` + `LINUXDO_PASSWORD`
+5. 人工登录初始化（仅自托管、可见浏览器模式）
+
+#### 方式一：持久化浏览器 profile（自托管推荐）
+
+首次运行时，执行：
+
+```bash
+BROWSER_HEADLESS=false python3 main.py --init-session
+```
+
+脚本会打开一个可见浏览器，你手动完成登录和验证一次即可。成功后浏览器状态会保存在 `BROWSER_USER_DATA_DIR` 对应目录中，后续定时任务会自动复用。
+
+#### 方式二：Cookie 登录
 
 | 环境变量名称             | 描述                                         | 示例值                          |
 |--------------------|--------------------------------------------|------------------------------|
@@ -33,14 +80,15 @@
 
 > 获取方式：打开 [linux.do](https://linux.do/) 并登录 → 按 F12 → Application → Cookies → `https://linux.do` → 全选所有 Cookie 复制为字符串粘贴即可。
 
-**方式二：账号密码登录**
+#### 方式三：账号密码登录
 
 | 环境变量名称             | 描述                | 示例值                                |
 |--------------------|-------------------|------------------------------------|
 | `LINUXDO_USERNAME` | 你的 LinuxDo 用户名或邮箱 | `your_username` 或 `your@email.com` |
 | `LINUXDO_PASSWORD` | 你的 LinuxDo 密码     | `your_password`                    |
 
-> 若同时设置了 `LINUXDO_COOKIES` 和账号密码，**Cookie 登录优先**；Cookie 失效时自动回退到账号密码登录。
+> 若同时设置了 `LINUXDO_COOKIES` 和账号密码，仍然是 **Cookie 优先**。  
+> 但在某些云环境里，账号密码回退登录可能会被 Cloudflare 拦截，因此不建议把它当成唯一方案。
 
 ~~之前的USERNAME和PASSWORD环境变量仍然可用，但建议使用新的环境变量~~
 
@@ -48,6 +96,16 @@
 
 | 环境变量名称                | 描述                   | 示例值                                    |
 |----------------------|----------------------|----------------------------------------|
+| `RUNTIME_DIR`        | 运行时目录，默认 `.runtime` | `/opt/linuxdo-checkin/runtime`         |
+| `BROWSER_USER_DATA_DIR` | 浏览器 profile 目录，默认 `RUNTIME_DIR/browser-profile` | `/opt/linuxdo-checkin/browser-profile` |
+| `BROWSER_PROFILE_NAME` | 浏览器 profile 名称，默认 `Default` | `Default` |
+| `BROWSER_HEADLESS`   | 是否无头运行，默认 `true`    | `true` 或 `false`                      |
+| `MANUAL_LOGIN_ENABLED` | 失败时是否允许人工登录回退，自托管推荐开启 | `true` 或 `false`                    |
+| `MANUAL_LOGIN_TIMEOUT` | 人工登录等待秒数，默认 `300` | `300`                                  |
+| `BROWSER_LOCAL_PORT` | 浏览器调试端口，默认自动分配     | `9222`                                 |
+| `BROWSER_PATH`       | Chromium / Chrome 可执行文件路径 | `/usr/bin/chromium`               |
+| `BROWSER_PROXY`      | 浏览器代理               | `http://127.0.0.1:7890`                |
+| `TOPIC_COUNT`        | 每次随机浏览帖子数量，默认 `10` | `6`                                  |
 | `GOTIFY_URL`         | Gotify 服务器地址         | `https://your.gotify.server:8080`      |
 | `GOTIFY_TOKEN`       | Gotify 应用的 API Token | `your_application_token`               |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token   | `123456789:ABCdefghijklmnopqrstuvwxyz` |
@@ -61,96 +119,164 @@
 
 ## 如何使用
 
+### 自托管环境快速开始
+
+#### 1. 安装依赖
+
+最快的方式是直接跑引导脚本：
+
+```bash
+./scripts/bootstrap_self_hosted.sh
+```
+
+它会：
+
+- 创建独立虚拟环境：`~/.cache/auto-check/venv`
+- 安装 Python 依赖
+- 创建持久化状态目录
+- 生成环境配置文件：`~/.config/auto-check/auto-check.env`
+
+如果你想手动安装，也可以继续按下面的方式执行。
+
+#### 1.1 手动安装依赖
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+Linux 机器还需要安装 Chromium，例如：
+
+```bash
+sudo apt update
+sudo apt install -y chromium-browser
+```
+
+部分发行版包名可能是 `chromium`。
+
+#### 2. 首次初始化登录态
+
+在有桌面环境或可转发图形界面的机器上执行：
+
+```bash
+BROWSER_HEADLESS=false ./scripts/run_self_hosted.sh --init-session
+```
+
+说明：
+
+- 会打开可见浏览器
+- 你手动登录 `linux.do`
+- 如遇 Cloudflare / Turnstile，请手动完成验证
+- 成功后，会话保存在 `BROWSER_USER_DATA_DIR`
+- 同时会写出本地 Cookie 快照，方便后续回退使用
+
+#### 3. 手动执行一次正式任务
+
+```bash
+./scripts/run_self_hosted.sh
+```
+
+#### 4. 配置 cron
+
+示例：
+
+```cron
+12 8,20 * * * cd /path/to/auto-check && ./scripts/run_self_hosted.sh >> ~/.cache/auto-check/runtime/cron.log 2>&1
+```
+
+这表示每天 `08:12` 和 `20:12` 执行一次。
+
+### 自托管运行建议
+
+- 如果是纯命令行服务器、没有图形界面，优先用 `LINUXDO_COOKIES`。
+- 自托管脚本默认从 `~/.config/auto-check/auto-check.env` 读取配置，不会把敏感信息放进仓库工作区。
+- 如果你能在桌面环境先执行一次 `--init-session`，后续把 `~/.cache/auto-check/browser-profile` 保留下来，稳定性通常更好。
+- 建议把 `~/.cache/auto-check` 和 `~/.config/auto-check` 加入备份。
+- 脚本现在带有锁文件，默认路径是 `~/.cache/auto-check/runtime/auto-check.lock`，可避免同一时间重复运行。
+
+### 青龙面板使用
+
+*注意：如果是 docker 容器创建的青龙，**请使用 `whyour/qinglong:debian` 镜像**，`latest`（alpine）版本可能无法安装部分依赖*
+
+1. **依赖安装**
+   - 安装 Python 依赖
+     - 进入青龙面板 -> 依赖管理 -> 安装依赖
+     - 依赖类型选择 `python3`
+     - 自动拆分选择 `是`
+     - 名称填写仓库 `requirements.txt` 的完整内容
+   - 安装 Linux Chromium 依赖
+     - 青龙面板 -> 依赖管理 -> 安装 Linux 依赖
+     - 名称填 `chromium`
+
+2. **添加仓库**
+   - 进入青龙面板 -> 订阅管理 -> 创建订阅
+   - 仓库地址填：`https://github.com/cxymds/auto-check.git`
+   - 定时规则可按需设置
+
+3. **配置环境变量**
+   - 推荐至少配置：
+     - `LINUXDO_COOKIES`
+     - 或 `LINUXDO_USERNAME` + `LINUXDO_PASSWORD`
+   - 如果青龙运行环境有桌面能力，也可以使用持久化 profile：
+     - `BROWSER_USER_DATA_DIR`
+     - `BROWSER_HEADLESS`
+     - `MANUAL_LOGIN_ENABLED`
+
+4. **运行**
+   - 点击任务右侧“运行”按钮
+   - 进入日志查看结果
+
 ### GitHub Actions 自动运行
 
-此项目的 GitHub Actions 配置会自动每天运行2次签到脚本。你无需进行任何操作即可启动此自动化任务。GitHub Actions 的工作流文件位于 `.github/workflows` 目录下，文件名为 `daily-check-in.yml`。
+仓库里的 workflow 现在已经改成 **self-hosted runner 版本**。  
+也就是说，调度和日志仍在 GitHub，但脚本会在你自己的 Linux 机器上执行。
 
 #### 配置步骤
 
-1. **设置环境变量**：
+1. **准备 self-hosted runner**
+    - 在你的 Linux 机器上添加 GitHub self-hosted runner
+    - 建议 runner 标签至少包含 `self-hosted` 和 `linux`
+    - 在 runner 机器上提前安装：
+      - `python3`
+      - `pip`
+      - `chromium` / `chromium-browser` / `google-chrome`
+
+2. **在 runner 机器上执行一次引导**
+    - 进入项目目录执行：
+      ```bash
+      ./scripts/bootstrap_self_hosted.sh
+      ```
+
+3. **首次初始化登录态**
+    - 在 runner 所在机器上，进入项目目录执行：
+      ```bash
+      BROWSER_HEADLESS=false ./scripts/run_self_hosted.sh --init-session
+      ```
+    - 完成一次手动登录后，浏览器 profile 会保存在 runner 本机
+
+4. **配置 GitHub Secrets / Variables**
     - 在 GitHub 仓库的 `Settings` -> `Secrets and variables` -> `Actions` 中添加以下变量：
         - （二选一）`LINUXDO_COOKIES`：从浏览器复制的 Cookie 字符串（**推荐，优先使用**）。
         - （二选一）`LINUXDO_USERNAME` + `LINUXDO_PASSWORD`：你的 LinuxDo 用户名/邮箱和密码。
-        - (可选) `BROWSE_ENABLED`：是否启用浏览帖子，`true` 或 `false`，默认为 `true`。
         - (可选) `GOTIFY_URL` 和 `GOTIFY_TOKEN`。
         - (可选) `SC3_PUSH_KEY`。
         - (可选) `WXPUSH_URL` 和 `WXPUSH_TOKEN`。
         - (可选) `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID`。
+    - 可在 `Variables` 中配置：
+      - `BROWSE_ENABLED`
+      - `BROWSER_PATH`
+      - `SELF_HOSTED_STATE_DIR`
 
-2. **手动触发工作流**：
-    - 进入 GitHub 仓库的 `Actions` 选项卡。
-    - 选择你想运行的工作流。
-    - 点击 `Run workflow` 按钮，选择分支，然后点击 `Run workflow` 以启动工作流。
+5. **手动触发工作流**
+    - 进入 GitHub 仓库的 `Actions` 选项卡
+    - 选择 `Daily Check-in`
+    - 点击 `Run workflow`
 
-#### 运行结果
+#### self-hosted workflow 行为说明
 
-##### 网页中查看
-
-`Actions`栏 -> 点击最新的`Daily Check-in` workflow run -> `run_script` -> `Execute script`
-
-可看到`Connect Info`：
-（新号可能这里为空，多挂几天就有了）
-![image](https://github.com/user-attachments/assets/853549a5-b11d-4d5a-9284-7ad2f8ea698b)
-
-### 青龙面板使用
-
-*注意：如果是docker容器创建的青龙，**请使用`whyour/qinglong:debian`镜像**，latest（alpine）版本可能无法安装部分依赖*
-
-1. **依赖安装**
-    - 安装Python依赖
-      - 进入青龙面板 -> 依赖管理 -> 安装依赖
-        - 依赖类型选择`python3`
-        - 自动拆分选择`是`
-        - 名称填写(仓库`requirements.txt`文件的完整内容)：
-            ```
-            DrissionPage==4.1.0.18
-            wcwidth==0.2.13
-            tabulate==0.9.0
-            loguru==0.7.2
-            curl-cffi
-            bs4
-            ```
-        - 点击确定
-    - 安装 linux chromium 依赖
-      - 青龙面板 -> 依赖管理 -> 安装Linux依赖
-      - 名称填`chromium`
-  
-        > 若安装失败，可能需要执行`apt update`更新索引（若使用docker则需进入docker容器执行）
-
-
-2. **添加仓库**
-    - 进入青龙面板 -> 订阅管理 -> 创建订阅
-    - 依次在对应的字段填入内容（未提及的不填）：
-      - **名称**：Linux.DO 签到
-      - **类型**：公开仓库
-      - **链接**：https://github.com/doveppp/linuxdo-checkin.git
-      - **分支**：main
-      - **定时类型**：`crontab`
-      - **定时规则**(拉取上游代码的时间，一天一次，可以自由调整频率): 0 0 * * *
-
-3. **配置环境变量**
-    - 进入青龙面板 -> 环境变量 -> 创建变量
-    - 需要配置以下变量：
-        - （二选一）`LINUXDO_COOKIES`：从浏览器复制的 Cookie 字符串（**推荐，优先使用**）
-        - （二选一）`LINUXDO_USERNAME`：你的LinuxDo用户名/邮箱
-        - （二选一）`LINUXDO_PASSWORD`：你的LinuxDo密码
-        - (可选) `BROWSE_ENABLED`：是否启用浏览帖子功能，`true` 或 `false`，默认为 `true`
-        - (可选) `GOTIFY_URL`：Gotify服务器地址
-        - (可选) `GOTIFY_TOKEN`：Gotify应用Token
-        - (可选) `SC3_PUSH_KEY`：Server酱³ SendKey
-        - (可选) `WXPUSH_URL`：wxpush服务器地址
-        - (可选) `WXPUSH_TOKEN`：wxpush的token
-        - (可选) `TELEGRAM_BOT_TOKEN`：Telegram Bot Token
-        - (可选) `TELEGRAM_CHAT_ID`：Telegram用户ID
-
-4. **手动拉取脚本**
-    - 首次添加仓库后不会立即拉取脚本，需要等待到定时任务触发，当然可以手动触发拉取
-    - 点击右侧"运行"按钮可手动执行
-
-#### 运行结果
-
-##### 青龙面板中查看
-- 进入青龙面板 -> 定时任务 -> 找到`Linux.DO 签到` -> 点击右侧的`日志`
+- workflow 会自动把运行时目录放到 runner 机器上的持久化路径中，而不是仓库工作区内。
+- 默认持久化根目录是：`~/.cache/auto-check`
+- 如果你希望改位置，可以在 GitHub Variables 里设置 `SELF_HOSTED_STATE_DIR`
+- workflow 会自动尝试探测浏览器路径；如果探测不到，可以设置 `BROWSER_PATH`
 
 ### Gotify 通知
 
@@ -184,8 +310,6 @@
 
 ## 自动更新
 
-- **Github Actions**：默认状态下自动更新是关闭的，[点击此处](https://github.com/ChatGPTNextWeb/ChatGPT-Next-Web/blob/main/README_CN.md#%E6%89%93%E5%BC%80%E8%87%AA%E5%8A%A8%E6%9B%B4%E6%96%B0)
-查看打开自动更新步骤。
-- **青龙面板**：更新是以仓库设置的定时规则有关，按照本文配置，则是每天0点更新一次。
-
-
+- **自托管**：推荐用 `git pull` 或你自己的发布方式控制更新节奏。
+- **GitHub Actions**：如继续使用 fork，同步方式仍取决于你的 workflow 配置。
+- **青龙面板**：更新频率由订阅定时规则决定。

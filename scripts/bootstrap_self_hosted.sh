@@ -20,7 +20,39 @@ detect_browser() {
   return 1
 }
 
+ensure_python_certificates() {
+  local cert_path=""
+
+  cert_path="$(python3 - <<'PY' 2>/dev/null || true
+try:
+    import certifi
+    print(certifi.where())
+except Exception:
+    pass
+PY
+)"
+
+  if [[ -z "$cert_path" ]]; then
+    python3 -m pip install --user --upgrade \
+      --trusted-host pypi.org \
+      --trusted-host files.pythonhosted.org \
+      --trusted-host pypi.python.org \
+      certifi
+
+    cert_path="$(python3 - <<'PY'
+import certifi
+print(certifi.where())
+PY
+)"
+  fi
+
+  export SSL_CERT_FILE="$cert_path"
+  export PIP_CERT="$cert_path"
+}
+
 mkdir -p "$STATE_ROOT/runtime" "$STATE_ROOT/browser-profile" "$CONFIG_DIR"
+
+ensure_python_certificates
 
 if [[ ! -d "$VENV_DIR" ]]; then
   python3 -m venv "$VENV_DIR"
